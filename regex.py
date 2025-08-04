@@ -233,9 +233,20 @@ class LogView(discord.ui.View):
         )
         
         for i, message in enumerate(page_messages, start=start_idx + 1):
+            # Format the message content
+            content = message.content[:200] + "..." if len(message.content) > 200 else message.content
+            if not content.strip():
+                content = "[No text content]"
+            
+            # Add timestamp and author info
+            timestamp = message.created_at.strftime("%Y-%m-%d %H:%M:%S")
+            author_name = message.author.display_name if hasattr(message.author, 'display_name') else message.author.name
+            
+            field_value = f"**{author_name}** • {timestamp}\n{content}"
+            
             embed.add_field(
                 name=f"Message {i}",
-                value=f"{message.content[:100]}{'...' if len(message.content) > 100 else ''}",
+                value=field_value,
                 inline=False
             )
         
