@@ -101,10 +101,12 @@ def has_exempted_role(member):
         "Mod Director"
     ]
     
-    # Check for specific exempted roles only
-    exempted_role_names = [role.name for role in member.roles if role.name in exempted_roles]
-    
-    return len(exempted_role_names) > 0
+    # Only check roles if the object is a Member (not a User)
+    if hasattr(member, "roles"):
+        # Check for specific exempted roles only
+        exempted_role_names = [role.name for role in member.roles if role.name in exempted_roles]
+        return bool(exempted_role_names)
+    return False
 
 def is_test_command_allowed(ctx):
     """Check if command is allowed based on test mode"""
@@ -200,11 +202,12 @@ async def on_message(message):
     # Debug: Print message info
     print(f"📝 Message from {message.author.name}: {message.content[:50]}...")
 
-    # Check if user has exempted roles
-    if has_exempted_role(message.author):
-        print(f"🛡️ {message.author.name} has exempted role - skipping profanity filter")
-        await bot.process_commands(message)
-        return
+    # Only check for exempted roles if message.author has 'roles' (i.e., is a Member)
+    if hasattr(message.author, 'roles'):
+        if has_exempted_role(message.author):
+            print(f"🛡️ {message.author.name} has exempted role - skipping profanity filter")
+            await bot.process_commands(message)
+            return
 
     # Profanity filter
     if message.content:
