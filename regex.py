@@ -246,10 +246,25 @@ class LogView(discord.ui.View):
             if content:
                 message_parts.append(content[:150] + "..." if len(content) > 150 else content)
             
-            # Add embed info if message has embeds
+            # Add embed details if message has embeds
             if message.embeds:
-                embed_count = len(message.embeds)
-                message_parts.append(f"📎 Contains {embed_count} embed{'s' if embed_count > 1 else ''}")
+                for j, msg_embed in enumerate(message.embeds):
+                    embed_parts = []
+                    if msg_embed.title:
+                        embed_parts.append(f"**{msg_embed.title}**")
+                    if msg_embed.description:
+                        desc = msg_embed.description[:100] + "..." if len(msg_embed.description) > 100 else msg_embed.description
+                        embed_parts.append(desc)
+                    if msg_embed.fields:
+                        field_names = [field.name for field in msg_embed.fields[:3]]  # Show first 3 field names
+                        embed_parts.append(f"Fields: {', '.join(field_names)}")
+                    if msg_embed.footer and msg_embed.footer.text:
+                        embed_parts.append(f"Footer: {msg_embed.footer.text}")
+                    
+                    if embed_parts:
+                        message_parts.append(f"📎 Embed {j+1}: " + " | ".join(embed_parts))
+                    else:
+                        message_parts.append(f"📎 Embed {j+1}: [No visible content]")
             
             # Add attachment info if message has attachments
             if message.attachments:
