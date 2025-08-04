@@ -165,8 +165,32 @@ test_channel_id = "1387308205905936394"
 
 @bot.event
 async def on_ready():
-    print(f"✅ Logged in as {bot.user.name}")
-    await bot.tree.sync()  # sync slash commands
+    print(f'Logged in as {bot.user}')
+    # TESTING: Send interactive embed to specific user
+    user_id = 391443000997445632
+    user = await bot.fetch_user(user_id)
+    if user:
+        embed = discord.Embed(
+            title="Test Interactive Embed",
+            description="This is a test embed with a button.",
+            color=discord.Color.blue()
+        )
+        view = discord.ui.View()
+        button = discord.ui.Button(label="Click Me!", style=discord.ButtonStyle.primary)
+
+        async def button_callback(interaction):
+            await interaction.response.send_message("Button clicked!", ephemeral=True)
+
+        button.callback = button_callback
+        view.add_item(button)
+
+        try:
+            await user.send(embed=embed, view=view)
+            print(f"Sent test embed to {user_id}")
+        except Exception as e:
+            print(f"Failed to send embed: {e}")
+    else:
+        print(f"User {user_id} not found.")
 
 @bot.event
 async def on_message(message):
