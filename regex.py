@@ -4,330 +4,780 @@ import os
 import discord
 from discord.ext import commands
 from discord import app_commands
-from datetime import timedelta
-import time
+from datetime import timedelta, datetime
+import asyncio
+import random
 
-# --- Role check decorators ---
+# Load custom profanity patterns from profanity.json
+def load_custom_patterns():
+    try:
+        print("🔍 Loading profanity patterns from profanity.json...")
+        with open('profanity.json', 'r') as f:
+            patterns = json.load(f)
+        
+        print(f"📝 Found {len(patterns)} patterns in JSON")
+        compiled_patterns = []
+        for i, pattern in enumerate(patterns):
+            try:
+                # Handle different pattern types
+                if '\\*' in pattern:
+                    # Handle asterisk patterns (already escaped in JSON)
+                    regex_pattern = r'\b' + pattern + r'\b'
+                elif pattern.startswith('\\b') and pattern.endswith('\\b'):
+                    # Handle pre-formatted regex patterns with word boundaries
+                    regex_pattern = pattern
+                else:
+                    # Handle regular word patterns
+                    regex_pattern = r'\b' + re.escape(pattern) + r'\b'
+                compiled_patterns.append(re.compile(regex_pattern, re.IGNORECASE))
+                print(f"✅ Compiled pattern {i+1}: {pattern} -> {regex_pattern}")
+            except re.error as e:
+                print(f"⚠️ Invalid regex pattern '{pattern}': {e}")
+                continue
+        
+        return compiled_patterns
+    except FileNotFoundError:
+        print("⚠️ profanity.json not found. No profanity patterns loaded.")
+        return []
+    except json.JSONDecodeError as e:
+        print(f"⚠️ Error parsing profanity.json: {e}")
+        return []
+    except Exception as e:
+        print(f"⚠️ Unexpected error loading patterns: {e}")
+        return []
+
+custom_patterns = load_custom_patterns()
+print(f"🔍 Loaded {len(custom_patterns)} profanity patterns")
+
+# Initialize profanity checker using only custom regex patterns
+def is_profane(text):
+    """Check if text contains profanity using custom regex patterns from profanity.json"""
+    try:
+        # Check with custom regex patterns
+        for i, pattern in enumerate(custom_patterns):
+            if pattern.search(text):
+                print(f"🚫 Pattern {i+1} matched: {pattern.pattern}")
+                # Check if it's just the exempted words
+                if is_exempted_content(text):
+                    print(f"✅ Content exempted: {text}")
+                    return False
+                return True
+                
+        return False
+    except Exception as e:
+        print(f"⚠️ Error checking profanity patterns: {e}")
+        return False
+
+def is_exempted_content(text):
+    """Check if the text only contains exempted words (s word and d word)"""
+    # Convert to lowercase for comparison
+    text_lower = text.lower()
+    
+    # Define exempted words and their variations
+    exempted_words = [
+        'shit', 'sh*t', 'sh!t', 's***', 's**t', 's***t',
+        'damn', 'd*mn', 'd*mn', 'd***', 'd**n', 'd***n'
+    ]
+    
+    # Check if the text contains only exempted words
+    for word in exempted_words:
+        if word in text_lower:
+            # If it's just the exempted word or with common punctuation, allow it
+            import re
+            # Remove common punctuation and check if it's just the exempted word
+            cleaned_text = re.sub(r'[^\w\s]', '', text_lower).strip()
+            if cleaned_text == word.replace('*', '').replace('!', ''):
+                return True
+    
+    return False
+
+def has_exempted_role(member):
+    """Check if a member has any of the exempted roles"""
+    exempted_roles = [
+        "Senior Host Of Nikoh",
+        "Moderator Of Nikoh", 
+        "Technical Support",
+        "Game Director",
+        "Mod Director"
+    ]
+    
+    # Check for specific exempted roles only
+    exempted_role_names = [role.name for role in member.roles if role.name in exempted_roles]
+    
+    return len(exempted_role_names) > 0
+
+def is_test_command_allowed(ctx):
+    """Check if command is allowed based on test mode"""
+    global test_mode_active, test_restricted_mode, test_channel_id
+    
+    # If test mode is not active, allow all commands
+    if not test_mode_active:
+        return True
+    
+    # If in global mode, allow all commands
+    if not test_restricted_mode:
+        return True
+    
+    # If in restricted mode, only allow in test channel
+    return str(ctx.channel.id) == test_channel_id
+
+def save_json(data, path):
+    with open(path, 'w') as f:
+        json.dump(data, f, indent=4)
+
+# Role checker
 def is_admin_or_trial_mod():
     async def predicate(ctx):
         if ctx.author.guild_permissions.administrator:
             return True
-        trial_mod_role = discord.utils.get(ctx.guild.roles, name="Trial Mod of Nikoh")  # updated
-        if trial_mod_role and trial_mod_role in ctx.author.roles:
+        trial_mod_role = discord.utils.get(ctx.guild.roles, name="Trial Mod of Nikoh")
+        host_role = discord.utils.get(ctx.guild.roles, name="Host Of Nikoh")
+        mod_role = discord.utils.get(ctx.guild.roles, name="Moderator Of Nikoh")
+        if (trial_mod_role and trial_mod_role in ctx.author.roles) or (host_role and host_role in ctx.author.roles) or (mod_role and mod_role in ctx.author.roles):
             return True
         await ctx.send("❌ You don't have permission to use this command.", delete_after=5)
         return False
     return commands.check(predicate)
 
-def is_admin_or_trial_mod_appcmd():
-    async def predicate(interaction: discord.Interaction):
-        if interaction.user.guild_permissions.administrator:
-            return True
-        trial_mod_role = discord.utils.get(interaction.guild.roles, name="Trial Mod of Nikoh")  # updated
-        if trial_mod_role and trial_mod_role in interaction.user.roles:
-            return True
-        await interaction.response.send_message("❌ You don't have permission to use this command.", ephemeral=True)
-        return False
-    return app_commands.check(predicate)
+# Hardcoded bot token for local testing
+TOKEN = os.environ.get("MY_SECRET_TOKEN")
 
-# 🔐 Bot token
-TOKEN = "Insert Token Here"
-
+# Initialize bot
 intents = discord.Intents.default()
 intents.message_content = True
+intents.voice_states = True
 bot = commands.Bot(command_prefix="!", intents=intents)
-tree = bot.tree
 
-log_channel = None
+# If there was a karaoke command loaded from an extension or earlier import, drop it.
+bot.remove_command("karaoke")
+bot.remove_command("karaoke_queue")
+bot.remove_command("karaoke_queue_end")
+bot.remove_command("karaoke_leave")
+bot.remove_command("karaoke_remove")
 
-def load_patterns_from_json(path):
-    if os.path.exists(path):
-        with open(path, "r") as f:
-            return json.load(f)
-    return []
+karaoke_queue = []
+karaoke_closed = False
 
-def save_patterns_to_json(patterns, path):
-    with open(path, "w") as f:
-        json.dump(patterns, f, indent=4)
-
-profanity_patterns = load_patterns_from_json("profanity.json")
-extra_patterns = load_patterns_from_json("extra_patterns.json")
-
-# 🚨 Warning system
-warning_data_path = "user_warnings.json"
-
-def load_warnings():
-    if os.path.exists(warning_data_path):
-        with open(warning_data_path, "r") as f:
-            return json.load(f)
-    return {}
-
-def save_warnings(data):
-    with open(warning_data_path, "w") as f:
-        json.dump(data, f, indent=4)
-
-user_warnings = load_warnings()
-
-# ✅ Dismiss Button View
-class DismissView(discord.ui.View):
-    def __init__(self, author: discord.User):
-        super().__init__(timeout=60)
-        self.author = author
-
-    @discord.ui.button(label="Dismiss", style=discord.ButtonStyle.secondary)
-    async def dismiss(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user != self.author:
-            await interaction.response.send_message("❌ You can't dismiss this message.", ephemeral=True)
-            return
-        await interaction.message.delete()
+# Test mode variables
+test_mode_active = False
+test_restricted_mode = True  # True = only specific channel, False = all channels
+test_channel_id = "1387308205905936394"
 
 @bot.event
 async def on_ready():
-    synced = await tree.sync()
     print(f"✅ Logged in as {bot.user.name}")
-    print(f"✅ Slash commands synced globally: {len(synced)} commands")
+    await bot.tree.sync()  # sync slash commands
 
 @bot.event
 async def on_message(message):
-    global log_channel
-
     if message.author == bot.user or not message.guild:
         return
 
-    all_patterns = profanity_patterns + extra_patterns
-    matched_pattern = None
+    # Debug: Print message info
+    print(f"📝 Message from {message.author.name}: {message.content[:50]}...")
 
-    for pattern_text in all_patterns:
-        pattern = re.compile(pattern_text, re.IGNORECASE)
-        if pattern.search(message.content):
-            matched_pattern = pattern.pattern
-            break
+    # Check if user has exempted roles
+    if has_exempted_role(message.author):
+        print(f"🛡️ {message.author.name} has exempted role - skipping profanity filter")
+        await bot.process_commands(message)
+        return
 
-    if matched_pattern:
-        try:
-            await message.delete()
-            view = DismissView(message.author)
-            await message.channel.send(
-                f"⚠️ {message.author.mention}, please avoid using offensive language.",
-                view=view
-            )
-        except discord.Forbidden:
-            print("❌ Missing permission to delete message.")
-        except discord.HTTPException as e:
-            print(f"❌ Error deleting message: {e}")
-
-        user_id = str(message.author.id)
-        if user_id not in user_warnings:
-            user_warnings[user_id] = {"warnings": 0, "timeout_stage": 0}
-
-        user_warnings[user_id]["warnings"] += 1
-        warning_count = user_warnings[user_id]["warnings"]
-        save_warnings(user_warnings)
-
-        if log_channel:
-            embed = discord.Embed(
-                title="🚨 Profanity Detected and Message Deleted",
-                description=f"`{message.content}`",
-                color=discord.Color.red()
-            )
-            embed.set_author(name=message.author.name, icon_url=message.author.display_avatar.url)
-            embed.add_field(name="Matched Pattern", value=f"`{matched_pattern}`", inline=False)
-            embed.add_field(name="Channel", value=message.channel.mention, inline=True)
-            embed.add_field(name="User", value=message.author.mention, inline=True)
-            embed.add_field(name="Warnings", value=str(warning_count), inline=True)
-            embed.set_footer(text=f"User ID: {message.author.id}")
-            await log_channel.send(embed=embed)
+    # Profanity filter
+    if message.content:
+        print(f"🔍 Checking content: {message.content}")
+        
+        if is_profane(message.content):
+            print(f"🚫 Profanity detected in message from {message.author.name}")
+            try:
+                await message.delete()
+                warning_msg = await message.channel.send(
+                    f"⚠️ {message.author.mention}, please keep the chat family-friendly! Your message was removed.",
+                    delete_after=10
+                )
+                print(f"🚫 Profanity detected from {message.author.name} ({message.author.id}) in {message.guild.name} - Channel: {message.channel.name}")
+                return
+            except discord.Forbidden:
+                print(f"❌ Cannot delete message from {message.author.name} - missing permissions")
+            except discord.NotFound:
+                print(f"❌ Message from {message.author.name} already deleted")
+        else:
+            print("✅ No profanity detected")
 
     await bot.process_commands(message)
 
-@tree.command(name="regexlist", description="List all current regex patterns.")
-@is_admin_or_trial_mod_appcmd()
-async def regexlist(interaction: discord.Interaction):
-    all_patterns = profanity_patterns + extra_patterns
-
-    if not all_patterns:
-        await interaction.response.send_message("❌ No regex patterns found.", ephemeral=True)
+@bot.command(name="k")
+async def karaoke(ctx, *, arg=None):
+    # Check test mode restrictions
+    if not is_test_command_allowed(ctx):
+        if test_mode_active and test_restricted_mode:
+            await ctx.send(f"❌ Test mode is **RESTRICTED**. Commands only work in <#{test_channel_id}>!", delete_after=5)
         return
-
-    chunk_size = 10
-    chunks = [all_patterns[i:i+chunk_size] for i in range(0, len(all_patterns), chunk_size)]
-
-    embeds = []
-    for i, chunk in enumerate(chunks):
+    
+    # Check if command is used in karaoke voice channel
+    karaoke_channels = ["1388174386523275284", "1386156487310835722"]
+    if str(ctx.channel.id) not in karaoke_channels:
+        await ctx.send("❌ Karaoke commands can only be used in the karaoke voice channels!", delete_after=5)
+        return
+    
+    if arg and arg.lower() == "help":
         embed = discord.Embed(
-            title=f"📜 Regex Pattern List (Page {i+1}/{len(chunks)})",
-            description="\n".join(f"`{p}`" for p in chunk),
-            color=discord.Color.blurple()
+            title="🎤 Karaoke Commands",
+            description="Here are all the available karaoke commands:",
+            color=discord.Color.magenta()
         )
-        embeds.append(embed)
-
-    if len(embeds) == 1:
-        await interaction.response.send_message(embed=embeds[0], ephemeral=True)
+        embed.add_field(
+            name="!k",
+            value="Join the karaoke queue",
+            inline=False
+        )
+        embed.add_field(
+            name="!k add @user",
+            value="Add a user to the queue (Authorized users only)",
+            inline=False
+        )
+        embed.add_field(
+            name="!kl",
+            value="Leave the karaoke queue",
+            inline=False
+        )
+        embed.add_field(
+            name="!kr @user",
+            value="Remove a user from the queue (Moderator only)",
+            inline=False
+        )
+        embed.add_field(
+            name="!kq",
+            value="View the current karaoke queue",
+            inline=False
+        )
+        embed.add_field(
+            name="!kn",
+            value="Move to next person (Moderator only)",
+            inline=False
+        )
+        embed.add_field(
+            name="!kqe",
+            value="Clear the entire queue (Moderator only)",
+            inline=False
+        )
+        embed.add_field(
+            name="!kc",
+            value="Close karaoke (Moderator only)",
+            inline=False
+        )
+        embed.add_field(
+            name="!ko",
+            value="Open karaoke (Moderator only)",
+            inline=False
+        )
+        embed.set_footer(text="Moderator roles: Trial Mod of Nikoh, Host Of Nikoh, Moderator Of Nikoh")
+        await ctx.send(embed=embed)
+        return
+    
+    # Check if it's the add command
+    if arg and arg.lower().startswith("add "):
+        # Check if user is authorized to use add command
+        authorized_users = ["1306577300304826369", "429920624131964928"]
+        if str(ctx.author.id) not in authorized_users:
+            await ctx.send("❌ You don't have permission to add users to the queue.", delete_after=5)
+            return
+        
+        # Get the mentioned user
+        if not ctx.message.mentions:
+            await ctx.send("❌ Please mention a user to add to the queue. Usage: `!k add @user`")
+            return
+        
+        target_user = ctx.message.mentions[0]
+        target_user_id = str(target_user.id)
+        
+        if target_user_id in karaoke_queue:
+            position = karaoke_queue.index(target_user_id) + 1
+            await ctx.send(f"🎤 {target_user.mention} is already in the karaoke queue! Position: {position}")
+        else:
+            karaoke_queue.append(target_user_id)
+            position = len(karaoke_queue)
+            await ctx.send(f"✅ {target_user.mention} has been added to the karaoke queue by {ctx.author.mention}! Position: {position}")
+        return
+    
+    # Check if karaoke is closed (except for add command which is handled above)
+    if karaoke_closed:
+        await ctx.send("🔒 Karaoke is currently CLOSED! Only authorized users can add people to the queue.", delete_after=5)
+        return
+    
+    user_id = str(ctx.author.id)
+    if user_id in karaoke_queue:
+        position = karaoke_queue.index(user_id) + 1
+        await ctx.send(f"🎤 {ctx.author.mention}, you're already in the karaoke queue! Position: {position}")
     else:
-        await interaction.response.send_message("📁 Multiple regex pages found:", ephemeral=True)
-        for embed in embeds:
-            await interaction.followup.send(embed=embed, ephemeral=True)
+        karaoke_queue.append(user_id)
+        position = len(karaoke_queue)
+        await ctx.send(f"✅ {ctx.author.mention}, you've been added to the karaoke queue! Position: {position}")
 
-@tree.command(name="regexlog", description="Set the log channel for regex matches.")
-@app_commands.describe(channel="Channel to log matches in")
-@is_admin_or_trial_mod_appcmd()
-async def regexlog(interaction: discord.Interaction, channel: discord.TextChannel):
-    global log_channel
-    log_channel = channel
-    await interaction.response.send_message(f"✅ Regex log channel set to {channel.mention}", ephemeral=True)
+@bot.command(name="kl")
+async def karaoke_leave(ctx):
+    # Check test mode restrictions
+    if not is_test_command_allowed(ctx):
+        if test_mode_active and test_restricted_mode:
+            await ctx.send(f"❌ Test mode is **RESTRICTED**. Commands only work in <#{test_channel_id}>!", delete_after=5)
+        return
+    
+    # Check if command is used in karaoke voice channel
+    karaoke_channels = ["1388174386523275284", "1386156487310835722"]
+    if str(ctx.channel.id) not in karaoke_channels:
+        await ctx.send("❌ Karaoke commands can only be used in the karaoke voice channels!", delete_after=5)
+        return
+    
+    user_id = str(ctx.author.id)
+    if user_id in karaoke_queue:
+        karaoke_queue.remove(user_id)
+        await ctx.send(f"👋 {ctx.author.mention}, you have left the karaoke queue.")
+    else:
+        await ctx.send(f"❌ {ctx.author.mention}, you are not in the karaoke queue.")
 
-@tree.command(name="regexadd", description="Add a new regex pattern to scan for.")
-@app_commands.describe(pattern="The regex expression to add")
-@is_admin_or_trial_mod_appcmd()
-async def regexadd(interaction: discord.Interaction, pattern: str):
-    try:
-        re.compile(pattern)
-        extra_patterns.append(pattern)
-        save_patterns_to_json(extra_patterns, "extra_patterns.json")
-        await interaction.response.send_message(f"✅ Pattern added: `{pattern}`", ephemeral=True)
-    except re.error:
-        await interaction.response.send_message("❌ Invalid regex pattern.", ephemeral=True)
-
-@bot.command()
-async def test(ctx):
-    await ctx.send("Bot is working!")
-
-@tree.command(name="warn", description="Warn a user for a reason.")
-@app_commands.describe(user="The user to warn", reason="Reason for the warning")
-@is_admin_or_trial_mod_appcmd()
-async def warn(interaction: discord.Interaction, user: discord.Member, reason: str = "No reason provided"):
+@bot.command(name="kr")
+@is_admin_or_trial_mod()
+async def karaoke_remove(ctx, user: discord.Member = None):
+    # Check test mode restrictions
+    if not is_test_command_allowed(ctx):
+        if test_mode_active and test_restricted_mode:
+            await ctx.send(f"❌ Test mode is **RESTRICTED**. Commands only work in <#{test_channel_id}>!", delete_after=5)
+        return
+    
+    # Check if command is used in karaoke voice channel
+    karaoke_channels = ["1388174386523275284", "1386156487310835722"]
+    if str(ctx.channel.id) not in karaoke_channels:
+        await ctx.send("❌ Karaoke commands can only be used in the karaoke voice channels!", delete_after=5)
+        return
+    
+    if not user:
+        await ctx.send("❌ Please mention a user to remove. Usage: `!kr @user`")
+        return
+    
     user_id = str(user.id)
-    if user_id not in user_warnings:
-        user_warnings[user_id] = {"warnings": 0, "timeout_stage": 0}
-    user_warnings[user_id]["warnings"] += 1
-    save_warnings(user_warnings)
+    if user_id in karaoke_queue:
+        karaoke_queue.remove(user_id)
+        await ctx.send(f"🗑️ {user.mention} has been removed from the karaoke queue by {ctx.author.mention}.")
+    else:
+        await ctx.send(f"❌ {user.mention} is not in the karaoke queue.")
 
-    embed = discord.Embed(
-        title="⚠️ User Warned",
-        description=f"{user.mention} has been warned.",
-        color=discord.Color.orange()
-    )
-    embed.add_field(name="Reason", value=reason, inline=False)
-    embed.add_field(name="Total Warnings", value=str(user_warnings[user_id]["warnings"]), inline=True)
-    embed.set_footer(text=f"Warned by {interaction.user}", icon_url=interaction.user.display_avatar.url)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+@bot.command(name="kc")
+@is_admin_or_trial_mod()
+async def karaoke_close(ctx):
+    global karaoke_closed
+    # Check test mode restrictions
+    if not is_test_command_allowed(ctx):
+        if test_mode_active and test_restricted_mode:
+            await ctx.send(f"❌ Test mode is **RESTRICTED**. Commands only work in <#{test_channel_id}>!", delete_after=5)
+        return
+    
+    # Check if command is used in karaoke voice channel
+    karaoke_channels = ["1388174386523275284", "1386156487310835722"]
+    if str(ctx.channel.id) not in karaoke_channels:
+        await ctx.send("❌ Karaoke commands can only be used in the karaoke voice channels!", delete_after=5)
+        return
+    
+    karaoke_closed = True
+    await ctx.send("🔒 Karaoke is now CLOSED! Only authorized users can add people to the queue.")
 
+@bot.command(name="ko")
+@is_admin_or_trial_mod()
+async def karaoke_open(ctx):
+    global karaoke_closed
+    # Check test mode restrictions
+    if not is_test_command_allowed(ctx):
+        if test_mode_active and test_restricted_mode:
+            await ctx.send(f"❌ Test mode is **RESTRICTED**. Commands only work in <#{test_channel_id}>!", delete_after=5)
+        return
+    
+    # Check if command is used in karaoke voice channels
+    karaoke_channels = ["1388174386523275284", "1386156487310835722"]
+    if str(ctx.channel.id) not in karaoke_channels:
+        await ctx.send("❌ Karaoke commands can only be used in the karaoke voice channels!", delete_after=5)
+        return
+    
+    karaoke_closed = False
+    await ctx.send("🎤 Karaoke is now OPEN! Users can join the queue again.")
+
+@bot.command(name="kn")
+@is_admin_or_trial_mod()
+async def karaoke_next(ctx):
+    # Check test mode restrictions
+    if not is_test_command_allowed(ctx):
+        if test_mode_active and test_restricted_mode:
+            await ctx.send(f"❌ Test mode is **RESTRICTED**. Commands only work in <#{test_channel_id}>!", delete_after=5)
+        return
+    
+    # Check if command is used in karaoke voice channel
+    karaoke_channels = ["1388174386523275284", "1386156487310835722"]
+    if str(ctx.channel.id) not in karaoke_channels:
+        await ctx.send("❌ Karaoke commands can only be used in the karaoke voice channels!", delete_after=5)
+        return
+    
+    if not karaoke_queue:
+        await ctx.send("🎤 The karaoke queue is currently empty.")
+        return
+    
+    # Remove the current person (first in queue)
+    current_user_id = karaoke_queue.pop(0)
+    
     try:
-        await user.send(f"You have been warned in **{interaction.guild.name}** for: {reason}")
-    except discord.Forbidden:
-        pass  # User has DMs closed
+        current_member = await ctx.guild.fetch_member(int(current_user_id))
+        current_name = current_member.display_name
+    except (discord.NotFound, discord.HTTPException):
+        current_name = f"User {current_user_id}"
+    
+    if karaoke_queue:
+        try:
+            next_member = await ctx.guild.fetch_member(int(karaoke_queue[0]))
+            next_name = next_member.display_name
+        except (discord.NotFound, discord.HTTPException):
+            next_name = f"User {karaoke_queue[0]}"
+        
+        await ctx.send(f"🎤 {current_name} has finished! Next up: {next_member.mention}")
+    else:
+        await ctx.send(f"🎤 {current_name} has finished! The karaoke queue is now empty.")
 
-@tree.command(name="whois", description="Show detailed info about a user.")
-@app_commands.describe(user="The user to get info on (leave blank for yourself)")
-@is_admin_or_trial_mod_appcmd()
-async def whois(interaction: discord.Interaction, user: discord.Member = None):
-    user = user or interaction.user
+@bot.command(name="kq")
+async def karaoke_queue_cmd(ctx):
+    # Check test mode restrictions
+    if not is_test_command_allowed(ctx):
+        if test_mode_active and test_restricted_mode:
+            await ctx.send(f"❌ Test mode is **RESTRICTED**. Commands only work in <#{test_channel_id}>!", delete_after=5)
+        return
+    
+    # Check if command is used in karaoke voice channel
+    karaoke_channels = ["1388174386523275284", "1386156487310835722"]
+    if str(ctx.channel.id) not in karaoke_channels:
+        await ctx.send("❌ Karaoke commands can only be used in the karaoke voice channels!", delete_after=5)
+        return
+    
+    if not karaoke_queue:
+        await ctx.send("🎤 The karaoke queue is currently empty.")
+        return
+    lines = []
+    for i, uid in enumerate(karaoke_queue, start=1):
+        try:
+            member = await ctx.guild.fetch_member(int(uid))
+            name = member.display_name
+        except discord.NotFound:
+            name = f"User {uid} (left server)"
+        except discord.HTTPException:
+            name = f"User {uid} (error)"
+        if i == 1:
+            lines.append(f"Current: {name}")
+        else:
+            lines.append(f"{i}. {name}")
     embed = discord.Embed(
-        title=f"Whois: {user}",
-        color=user.color if hasattr(user, "color") else discord.Color.blurple(),
-        timestamp=discord.utils.utcnow()
+        title="🎤 Karaoke Queue",
+        description="\n".join(lines),
+        color=discord.Color.magenta()
     )
-    embed.set_thumbnail(url=user.display_avatar.url)
-    embed.add_field(name="ID", value=user.id, inline=True)
-    embed.add_field(name="Display Name", value=user.display_name, inline=True)
-    embed.add_field(name="Account Created", value=user.created_at.strftime("%Y-%m-%d %H:%M:%S"), inline=False)
-    embed.add_field(name="Joined Server", value=user.joined_at.strftime("%Y-%m-%d %H:%M:%S") if user.joined_at else "Unknown", inline=False)
+    await ctx.send(embed=embed)
+
+@bot.command(name="kqe")
+@is_admin_or_trial_mod()
+async def karaoke_queue_end(ctx):
+    # Check test mode restrictions
+    if not is_test_command_allowed(ctx):
+        if test_mode_active and test_restricted_mode:
+            await ctx.send(f"❌ Test mode is **RESTRICTED**. Commands only work in <#{test_channel_id}>!", delete_after=5)
+        return
+    
+    # Check if command is used in karaoke voice channel
+    karaoke_channels = ["1388174386523275284", "1386156487310835722"]
+    if str(ctx.channel.id) not in karaoke_channels:
+        await ctx.send("❌ Karaoke commands can only be used in the karaoke voice channels!", delete_after=5)
+        return
+    
+    global karaoke_queue
+    if not karaoke_queue:
+        await ctx.send("🎤 The karaoke queue is already empty.")
+        return
+    
+    # Create confirmation embed
+    embed = discord.Embed(
+        title="⚠️ Confirm Queue Clear",
+        description=f"Are you sure you want to clear the karaoke queue?\n\n**Current queue has {len(karaoke_queue)} people:**",
+        color=discord.Color.red()
+    )
+    
+    # Add current queue to embed
+    queue_list = []
+    for i, uid in enumerate(karaoke_queue[:5], start=1):  # Show first 5 people
+        try:
+            member = await ctx.guild.fetch_member(int(uid))
+            name = member.display_name
+        except (discord.NotFound, discord.HTTPException):
+            name = f"User {uid}"
+        queue_list.append(f"{i}. {name}")
+    
+    if len(karaoke_queue) > 5:
+        queue_list.append(f"... and {len(karaoke_queue) - 5} more")
+    
     embed.add_field(
-        name="Roles",
-        value=", ".join([role.mention for role in user.roles if role != interaction.guild.default_role]) or "None",
+        name="Queue Members",
+        value="\n".join(queue_list) if queue_list else "Empty",
         inline=False
     )
-    embed.set_footer(text=f"Requested by {interaction.user}", icon_url=interaction.user.display_avatar.url)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-@bot.event
-async def on_command_error(ctx, error):
-    if isinstance(error, commands.CheckFailure):
-        await ctx.send("❌ You don't have permission to use this command.", delete_after=5)
-    else:
-        raise error  # Re-raise other errors so you still see tracebacks for bugs
-
-STAFF_FOLDER = "staff"  # Folder where your images are stored
-
-class StaffEmbedView(discord.ui.View):
-    def __init__(self, current_role="main"):
-        super().__init__(timeout=None)
-        self.current_role = current_role
-        self.update_buttons()
-
-    def update_buttons(self):
-        self.clear_items()
-        if self.current_role == "main":
-            button_labels = [
-                ("owner", "Owner"),
-                ("co-owner", "Co Owner"),
-                ("admin", "Admin"),
-                ("techsupport", "Tech Support"),
-                ("moddirector", "Mod Director"),
-                ("gamedirector", "Game Director"),
-                ("eventdirector", "Event Director"),
-            ]
-            for key, label in button_labels:
-                self.add_item(RoleButton(key, label))
-        else:
-            self.add_item(BackButton())
-
-    def get_embed(self):
-        embed = discord.Embed(
-            title="LEADERS OF NIKOH" if self.current_role == "main" else self.current_role.replace("-", " ").title(),
-            color=discord.Color.blurple()
-        )
-        embed.set_image(url=ROLE_IMAGES[self.current_role])
-        if self.current_role != "main":
-            embed.add_field(name="Role", value=self.current_role.replace("-", " ").title(), inline=False)
-        return embed
-
-class RoleButton(discord.ui.Button):
-    def __init__(self, role, label):
-        super().__init__(label=label, style=discord.ButtonStyle.primary)
-        self.role = role
-
-    async def callback(self, interaction: discord.Interaction):
-        embed = discord.Embed(
-            title=self.role.replace("-", " ").title(),
-            color=discord.Color.blurple()
-        )
-        embed.set_image(url=ROLE_IMAGES[self.role])
-        embed.add_field(name="Role", value=self.role.replace("-", " ").title(), inline=False)
-        await interaction.response.send_message(embed=embed, view=discord.ui.View().add_item(EphemeralBackButton()), ephemeral=True)
-
-class EphemeralBackButton(discord.ui.Button):
-    def __init__(self):
-        super().__init__(label="Back", style=discord.ButtonStyle.secondary)
-
-    async def callback(self, interaction: discord.Interaction):
-        await interaction.response.defer()  # Acknowledge the button click
-        await interaction.delete_original_response()  # Delete the ephemeral message
-
-class EphemeralMainView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=60)
-        # Add your role buttons here if you want more navigation
-
-@tree.command(name="embedstaff", description="Show interactive staff embed in a specific channel.")
-@app_commands.describe(channel="The channel to send the staff embed in")
-async def embedstaff(interaction: discord.Interaction, channel: discord.TextChannel):
-    view = StaffEmbedView()
-    await channel.send(embed=view.get_embed(), view=view)
-    await interaction.response.send_message(
-        f"✅ Staff embed sent to {channel.mention}. Anyone can use the buttons and see info privately.",
-        ephemeral=True
+    
+    embed.add_field(
+        name="Confirmation",
+        value="React with ✅ to confirm or ❌ to cancel",
+        inline=False
     )
+    
+    msg = await ctx.send(embed=embed)
+    await msg.add_reaction("✅")
+    await msg.add_reaction("❌")
+    
+    def check(reaction, user):
+        return user == ctx.author and str(reaction.emoji) in ["✅", "❌"] and reaction.message.id == msg.id
+    
+    try:
+        reaction, user = await bot.wait_for('reaction_add', timeout=30.0, check=check)
+        
+        if str(reaction.emoji) == "✅":
+            karaoke_queue.clear()
+            await ctx.send("🛑 The karaoke queue has been cleared.")
+        else:
+            await ctx.send("❌ Queue clear cancelled.")
+            
+    except asyncio.TimeoutError:
+        await ctx.send("⏰ Confirmation timed out. Queue was not cleared.")
 
-ROLE_IMAGES = {
-    "main": "https://imgur.com/naXgUAt.png",
-    "owner": "https://imgur.com/U1EAovf.png",
-    "co-owner": "https://imgur.com/t3YLXqQ.png",
-    "admin": "https://imgur.com/jsgJBLe.png",
-    "techsupport": "https://imgur.com/i2Rv9pi.png",
-    "moddirector": "https://imgur.com/8w575Zj.png",
-    "gamedirector": "https://imgur.com/VBB8OLq.png",
-    "eventdirector": "https://imgur.com/ItHTpl0.png"
-}
+@bot.command(name="test")
+async def test_mode(ctx):
+    """Toggle test mode for commands"""
+    global test_mode_active, test_restricted_mode
+    
+    if not test_mode_active:
+        # First activation - restricted mode
+        test_mode_active = True
+        test_restricted_mode = True
+        embed = discord.Embed(
+            title="🧪 Test Mode Activated",
+            description="Test mode is now **RESTRICTED** to specific channel only.",
+            color=discord.Color.orange()
+        )
+        embed.add_field(
+            name="Current Mode:",
+            value="🟡 **RESTRICTED** - Commands only work in designated test channel",
+            inline=False
+        )
+        embed.add_field(
+            name="Test Channel:",
+            value=f"<#{test_channel_id}>",
+            inline=False
+        )
+        embed.add_field(
+            name="Next Use:",
+            value="Use `!test` again to enable **GLOBAL** mode (all channels)",
+            inline=False
+        )
+        embed.set_footer(text="Test mode is now active")
+    else:
+        if test_restricted_mode:
+            # Switch to global mode
+            test_restricted_mode = False
+            embed = discord.Embed(
+                title="🌍 Test Mode - GLOBAL",
+                description="Test mode is now **GLOBAL** - works in all channels!",
+                color=discord.Color.green()
+            )
+            embed.add_field(
+                name="Current Mode:",
+                value="🟢 **GLOBAL** - Commands work in all channels",
+                inline=False
+            )
+            embed.add_field(
+                name="Next Use:",
+                value="Use `!test` again to **DEACTIVATE** test mode",
+                inline=False
+            )
+        else:
+            # Deactivate test mode
+            test_mode_active = False
+            test_restricted_mode = True
+            embed = discord.Embed(
+                title="❌ Test Mode Deactivated",
+                description="Test mode has been **DEACTIVATED**.",
+                color=discord.Color.red()
+            )
+            embed.add_field(
+                name="Status:",
+                value="🔴 **DEACTIVATED** - Normal operation restored",
+                inline=False
+            )
+            embed.add_field(
+                name="Next Use:",
+                value="Use `!test` again to activate **RESTRICTED** mode",
+                inline=False
+            )
+    
+    await ctx.send(embed=embed)
+    print(f"🧪 Test mode toggled by {ctx.author.name}: Active={test_mode_active}, Restricted={test_restricted_mode}")
+
+@bot.command(name="testprofanity")
+async def test_profanity(ctx):
+    """Test command to check if profanity filter is working"""
+    # Test the patterns directly
+    test_words = ["ass", "fuck", "bitch", "shit", "damn"]
+    results = []
+    
+    for word in test_words:
+        is_profane_result = is_profane(word)
+        results.append(f"{word}: {'🚫 BLOCKED' if is_profane_result else '✅ ALLOWED'}")
+    
+    embed = discord.Embed(
+        title="🧪 Profanity Filter Test",
+        description="Testing patterns with sample words:",
+        color=discord.Color.blue()
+    )
+    
+    embed.add_field(
+        name="Test Results",
+        value="\n".join(results),
+        inline=False
+    )
+    
+    embed.add_field(
+        name="Patterns Loaded",
+        value=f"{len(custom_patterns)} patterns loaded",
+        inline=False
+    )
+    
+    await ctx.send(embed=embed)
+    print(f"🧪 Profanity test requested by {ctx.author.name}")
+
+@bot.command(name="profanitystatus")
+@is_admin_or_trial_mod()
+async def profanity_status(ctx):
+    """Show the status of profanity filter systems"""
+    # Check test mode restrictions
+    if not is_test_command_allowed(ctx):
+        if test_mode_active and test_restricted_mode:
+            await ctx.send(f"❌ Test mode is **RESTRICTED**. Commands only work in <#{test_channel_id}>!", delete_after=5)
+        return
+    embed = discord.Embed(
+        title="🛡️ Profanity Filter Status",
+        description="Current profanity detection systems:",
+        color=discord.Color.blue()
+    )
+    
+    # Check custom patterns
+    if custom_patterns:
+        embed.add_field(
+            name="✅ Custom Regex Patterns",
+            value=f"Loaded {len(custom_patterns)} patterns from profanity.json",
+            inline=False
+        )
+    else:
+        embed.add_field(
+            name="⚠️ Custom Regex Patterns",
+            value="No patterns loaded (profanity.json not found or empty)",
+            inline=False
+        )
+    
+    embed.add_field(
+        name="📝 Note",
+        value="Profanity detection now uses only custom regex patterns from profanity.json",
+        inline=False
+    )
+    
+    await ctx.send(embed=embed)
+
+@bot.command(name="reloadprofanity")
+@is_admin_or_trial_mod()
+async def reload_profanity(ctx):
+    """Reload custom profanity patterns from profanity.json"""
+    # Check test mode restrictions
+    if not is_test_command_allowed(ctx):
+        if test_mode_active and test_restricted_mode:
+            await ctx.send(f"❌ Test mode is **RESTRICTED**. Commands only work in <#{test_channel_id}>!", delete_after=5)
+        return
+    global custom_patterns
+    try:
+        custom_patterns = load_custom_patterns()
+        if custom_patterns:
+            await ctx.send(f"✅ Reloaded {len(custom_patterns)} custom profanity patterns!")
+        else:
+            await ctx.send("⚠️ No custom patterns loaded. Check if profanity.json exists and is valid.")
+    except Exception as e:
+        await ctx.send(f"❌ Error reloading patterns: {str(e)}")
+
+@bot.command(name="exemptedwords")
+@is_admin_or_trial_mod()
+async def show_exempted_words(ctx):
+    """Show currently exempted words from profanity filter"""
+    # Check test mode restrictions
+    if not is_test_command_allowed(ctx):
+        if test_mode_active and test_restricted_mode:
+            await ctx.send(f"❌ Test mode is **RESTRICTED**. Commands only work in <#{test_channel_id}>!", delete_after=5)
+        return
+    embed = discord.Embed(
+        title="🛡️ Exempted Words",
+        description="These words are currently exempted from the profanity filter:",
+        color=discord.Color.green()
+    )
+    
+    exempted_list = [
+        "shit, sh*t, sh!t, s***, s**t, s***t",
+        "damn, d*mn, d*mn, d***, d**n, d***n"
+    ]
+    
+    embed.add_field(
+        name="Currently Exempted:",
+        value="\n".join(exempted_list),
+        inline=False
+    )
+    
+    embed.add_field(
+        name="Note:",
+        value="These words are allowed when used alone or with basic punctuation.",
+        inline=False
+    )
+    
+    await ctx.send(embed=embed)
+
+@bot.command(name="exemptedroles")
+@is_admin_or_trial_mod()
+async def show_exempted_roles(ctx):
+    """Show the list of roles exempted from profanity filtering"""
+    # Check test mode restrictions
+    if not is_test_command_allowed(ctx):
+        if test_mode_active and test_restricted_mode:
+            await ctx.send(f"❌ Test mode is **RESTRICTED**. Commands only work in <#{test_channel_id}>!", delete_after=5)
+        return
+    embed = discord.Embed(
+        title="🛡️ Exempted Roles",
+        description="Users with these roles are exempted from profanity filtering:",
+        color=discord.Color.blue()
+    )
+    
+    exempted_roles = [
+        "Senior Host Of Nikoh",
+        "Moderator Of Nikoh", 
+        "Technical Support",
+        "Game Director",
+        "Mod Director"
+    ]
+    
+    embed.add_field(
+        name="Specific Exempted Roles",
+        value="\n".join([f"• {role}" for role in exempted_roles]),
+        inline=False
+    )
+    
+    embed.add_field(
+        name="Note",
+        value="Only these specific roles are exempted. Administrator roles are no longer automatically exempted.",
+        inline=False
+    )
+    
+    embed.set_footer(text="Users with these roles can use any language without being filtered.")
+    
+    await ctx.send(embed=embed)
 
 bot.run(TOKEN)
+
+
