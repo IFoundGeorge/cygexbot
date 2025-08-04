@@ -168,41 +168,44 @@ test_channel_id = "1387308205905936394"
 @bot.event
 async def on_ready():
     print(f'Logged in as {bot.user}')
-    flag_file = "embed_sent.flag"
     user_id = 768301523972522004
+    user = await bot.fetch_user(user_id)
+    if user:
+        # Fetch or create the DM channel
+        dm_channel = await user.create_dm()
+        # Delete all messages in the DM channel sent by the bot
+        try:
+            async for message in dm_channel.history(limit=100):
+                if message.author == bot.user:
+                    await message.delete()
+        except Exception as e:
+            print(f"Failed to delete previous messages: {e}")
 
-    if not os.path.exists(flag_file):
-        user = await bot.fetch_user(user_id)
-        if user:
-            embed = discord.Embed(
-                title="Test Interactive Embed",
-                description="This is a test embed with a button and an image.",
-                color=discord.Color.blue()
-            )
-            # Attach the image
-            file = discord.File("img/main.png", filename="main.png")
-            embed.set_image(url="attachment://main.png")
+        # Send the interactive embed with image
+        embed = discord.Embed(
+            title="Test Interactive Embed",
+            description="This is a test embed with a button and an image.",
+            color=discord.Color.blue()
+        )
+        file = discord.File("img/main.png", filename="main.png")
+        embed.set_image(url="attachment://main.png")
 
-            view = discord.ui.View()
-            button = discord.ui.Button(label="Click Me!", style=discord.ButtonStyle.primary)
+        view = discord.ui.View()
+        button = discord.ui.Button(label="Click Me!", style=discord.ButtonStyle.primary)
 
-            async def button_callback(interaction):
-                await interaction.response.send_message("Button clicked!", ephemeral=True)
+        async def button_callback(interaction):
+            await interaction.response.send_message("Button clicked!", ephemeral=True)
 
-            button.callback = button_callback
-            view.add_item(button)
+        button.callback = button_callback
+        view.add_item(button)
 
-            try:
-                await user.send(embed=embed, view=view, file=file)
-                print(f"Sent test embed with image to {user_id}")
-                with open(flag_file, "w") as f:
-                    f.write("sent")
-            except Exception as e:
-                print(f"Failed to send embed: {e}")
-        else:
-            print(f"User {user_id} not found.")
+        try:
+            await user.send(embed=embed, view=view, file=file)
+            print(f"Sent test embed with image to {user_id}")
+        except Exception as e:
+            print(f"Failed to send embed: {e}")
     else:
-        print("Embed already sent previously; skipping.")
+        print(f"User {user_id} not found.")
 
 @bot.event
 async def on_message(message):
