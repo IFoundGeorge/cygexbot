@@ -169,7 +169,7 @@ test_channel_id = "1387308205905936394"
 async def on_ready():
     print(f'Logged in as {bot.user}')
     # TESTING: Send interactive embed to specific user
-    user_id = 391443000997445632
+    user_id = 768301523972522004
     user = await bot.fetch_user(user_id)
     if user:
         embed = discord.Embed(
