@@ -2,6 +2,7 @@ import re
 import json
 import os
 import discord
+import requests
 from discord.ext import commands
 from discord import app_commands
 from datetime import timedelta, datetime
@@ -48,6 +49,16 @@ def load_custom_patterns():
 
 custom_patterns = load_custom_patterns()
 print(f"🔍 Loaded {len(custom_patterns)} profanity patterns")
+
+# ====== CARL-BOT LOG → YOUR MIRROR WEBHOOK MAP ======
+channel_webhook_map = {
+    1147510748663250954: 'https://discord.com/api/webhooks/1401397651655622827/sa44LbKLiBiqivhlvVNNjVnpJu92ilB2J7Louw_3Ei87t257sjVtkf-XYAEgsPrKQVe-',
+    1386390379770679386: 'https://discord.com/api/webhooks/1401492460999413780/c_-mJBfwzohWja2yVtTpgec5l_Gzi9vfcr9IGz3GMlob2t6TEt_ajddyGPoTaUcmNbvN',
+    1386389897459273780: 'https://discord.com/api/webhooks/1401493361516347392/SYznL9QzDXVF7ceNt7ygZ9zr_jn3Dc5O1OYauLASb0PF8cZV-fcSN8ParYYyiEYYq96',
+    1386390075780239422: 'https://discord.com/api/webhooks/1401493669571465226/UQLz1LH5Y4VOdG835ki4kAh0G1mCdOUZ6W-zJ7IdOrDbcX4L9qWNMu1VcVnrgo1SLM_w',
+    1386390252624547893: 'https://discord.com/api/webhooks/1401493800374767686/tpS-FadR9NAqxZMejlZjIK83Krg3pLd_BUivwRfRWznFCHHEiwkgXjp7EtjAtCHyC_8y',
+    1386390501977794226: 'https://discord.com/api/webhooks/1401493904620261438/EfFK06JI3Sn65NyNlVF5QcMOJgLzBtoarV6ntfwe0LlrZgLvcLNZHy-8kGZE9-AaOZxB',
+}
 
 # Initialize profanity checker using only custom regex patterns
 def is_profane(text):
@@ -165,8 +176,15 @@ test_mode_active = False
 test_restricted_mode = True  # True = only specific channel, False = all channels
 test_channel_id = "1387308205905936394"
 
-# Channel IDs
+# Channel IDs for Carl bot
 CARL_LOG_CHANNEL = 1147510748663250954
+CARL_MESSAGE_CHANNEL = 1386390379770679386
+CARL_MEMBER_CHANNEL = 1386389897459273780
+CARL_SERVER_CHANNEL = 1386390075780239422
+CARL_VOICE_CHANNEL = 1386390252624547893
+CARL_JOIN_LEAVE_CHANNEL = 1386390501967794226
+
+# Channel IDs
 RYNO_LOG_CHANNEL = 1388161864709701682  # Using server log as main
 CONFESSION_LOG_CHANNEL = 1400898728428175400
 
@@ -179,7 +197,20 @@ class LogView(discord.ui.View):
     
     @discord.ui.button(label="Carl", style=discord.ButtonStyle.primary)
     async def carl_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.show_logs(interaction, "Carl", CARL_LOG_CHANNEL)
+        # Show Carl channel selection menu
+        embed = discord.Embed(
+            title="Carl Bot Logs",
+            description="Select which Carl bot log channel you want to view:",
+            color=discord.Color.blue()
+        )
+        embed.add_field(
+            name="Available Channels:",
+            value="• Carl Log - General logs\n• Message Log - Message events\n• Member Log - Member events\n• Server Log - Server events\n• Voice Log - Voice channel events\n• Join/Leave Log - Member join/leave events",
+            inline=False
+        )
+        
+        carl_view = CarlChannelView(self)
+        await interaction.response.edit_message(embed=embed, view=carl_view)
     
     @discord.ui.button(label="Ryno", style=discord.ButtonStyle.primary)
     async def ryno_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -226,18 +257,24 @@ class LogView(discord.ui.View):
         end_idx = min(start_idx + 10, len(self.messages))
         page_messages = self.messages[start_idx:end_idx]
         
-        # Create main embed
-        embed = discord.Embed(
-            title=f"{self.current_log_type} Logs",
-            description="",
-            color=discord.Color.blue()
-        )
-        
+        # Send each message as a separate embed
+        embeds = []
         for i, message in enumerate(page_messages, start=start_idx + 1):
             # Get message content and context
             content = message.content.strip() if message.content else ""
             timestamp = message.created_at.strftime("%Y-%m-%d %H:%M:%S")
             author_name = message.author.display_name if hasattr(message.author, 'display_name') else message.author.name
+            
+            # Create embed for this message
+            embed = discord.Embed(
+                title=f"{self.current_log_type} - Message {i}",
+                description="",
+                color=discord.Color.blue(),
+                timestamp=message.created_at
+            )
+            
+            # Add author info
+            embed.set_author(name=author_name, icon_url=message.author.display_avatar.url if message.author.display_avatar else None)
             
             # Build the message description
             message_parts = []
@@ -279,26 +316,198 @@ class LogView(discord.ui.View):
             if not message_parts:
                 message_parts.append("[Message with no visible content]")
             
-            # Combine all parts
-            field_value = f"**{author_name}** • {timestamp}\n" + "\n".join(message_parts)
+            # Set the description
+            embed.description = "\n".join(message_parts)
             
-            embed.add_field(
-                name=f"Message {i}",
-                value=field_value,
-                inline=False
+            # Add footer with pagination info
+            embed.set_footer(text=f"Page {self.current_page + 1} • Message {i} of {len(self.messages)}")
+            
+            embeds.append(embed)
+        
+        # Determine which view to use based on whether this is a search result
+        if hasattr(self, 'original_messages') and len(self.messages) < len(self.original_messages):
+            # This is a search result, use SearchResultsView
+            nav_view = SearchResultsView(self, self.original_messages)
+        else:
+            # This is the normal log view, use LogNavigationView
+            nav_view = LogNavigationView(self)
+        
+        # Send all embeds
+        await interaction.response.edit_message(embeds=embeds, view=nav_view)
+
+# In-memory state for search mode
+search_states = {}
+
+class SearchView(discord.ui.View):
+    def __init__(self, log_view: LogView):
+        super().__init__(timeout=60)
+        self.log_view = log_view
+        self.selected_log_type = None
+    
+    @discord.ui.select(
+        placeholder="Select log type to search in...",
+        options=[
+            discord.SelectOption(label="All Logs", value="all", description="Search in all available logs"),
+            discord.SelectOption(label="Carl Log", value="carl", description="General Carl bot logs"),
+            discord.SelectOption(label="Message Log", value="message", description="Message-related events"),
+            discord.SelectOption(label="Member Log", value="member", description="Member events"),
+            discord.SelectOption(label="Server Log", value="server", description="Server events"),
+            discord.SelectOption(label="Voice Log", value="voice", description="Voice channel events"),
+            discord.SelectOption(label="Join/Leave Log", value="join/leave", description="Member join/leave events"),
+            discord.SelectOption(label="Ryno Log", value="ryno", description="Ryno bot logs"),
+            discord.SelectOption(label="Confession Log", value="confession", description="Confession logs")
+        ]
+    )
+    async def log_type_select(self, interaction: discord.Interaction, select: discord.ui.Select):
+        self.selected_log_type = select.values[0]
+        await interaction.response.send_message(f"Selected log type: {select.values[0]}", ephemeral=True)
+    
+    @discord.ui.button(label="🔍 Search by Username", style=discord.ButtonStyle.primary)
+    async def search_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.selected_log_type:
+            await interaction.response.send_message("Please select a log type first!", ephemeral=True)
+            return
+        
+        # Show username input modal
+        modal = UsernameSearchModal(self.log_view, self.selected_log_type)
+        await interaction.response.send_modal(modal)
+    
+    @discord.ui.button(label="◀️ Back", style=discord.ButtonStyle.secondary)
+    async def back_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Return to log view
+        await self.log_view.display_page(interaction)
+
+class UsernameSearchModal(discord.ui.Modal, title="Search by Username"):
+    def __init__(self, log_view: LogView, log_type: str):
+        super().__init__()
+        self.log_view = log_view
+        self.log_type = log_type
+        self.original_messages = log_view.messages.copy()  # Store original messages
+    
+    username = discord.ui.TextInput(
+        label="Username/Name to Search",
+        placeholder="Enter username or display name to search for...",
+        required=True,
+        max_length=50
+    )
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        username = self.username.value.lower().strip()
+        
+        # Filter messages by username
+        filtered = []
+        for msg in self.log_view.messages:
+            # Check if username matches the message author
+            author_name = (msg.author.display_name or msg.author.name).lower()
+            if username in author_name:
+                filtered.append(msg)
+                continue
+            
+            # Check if username appears in message content
+            if username in (msg.content or '').lower():
+                filtered.append(msg)
+                continue
+            
+            # Check if username appears in embeds
+            for emb in msg.embeds:
+                if (emb.title and username in emb.title.lower()) or \
+                   (emb.description and username in emb.description.lower()):
+                    filtered.append(msg)
+                    break
+        
+        # If specific log type is selected (not "all"), filter further
+        if self.log_type != "all":
+            log_type_filtered = []
+            for msg in filtered:
+                # Check if the log type appears in the message content or embeds
+                if self.log_type in (msg.content or '').lower():
+                    log_type_filtered.append(msg)
+                    continue
+                for emb in msg.embeds:
+                    if (emb.title and self.log_type in emb.title.lower()) or \
+                       (emb.description and self.log_type in emb.description.lower()):
+                        log_type_filtered.append(msg)
+                        break
+            filtered = log_type_filtered
+        
+        # Update log_view to show only filtered messages
+        self.log_view.messages = filtered
+        self.log_view.current_page = 0
+        
+        if filtered:
+            search_description = f"Username: '{username}'"
+            if self.log_type != "all":
+                search_description += f" | Log Type: '{self.log_type}'"
+            
+            # Create search results embed
+            results_embed = discord.Embed(
+                title=f"🔍 Search Results",
+                description=f"Found {len(filtered)} results for {search_description}",
+                color=discord.Color.green()
             )
-        
-        embed.set_footer(text=f"Page {self.current_page + 1} • Messages {start_idx + 1}-{end_idx} of {len(self.messages)}")
-        
-        # Create navigation view
-        nav_view = LogNavigationView(self)
-        
-        await interaction.response.edit_message(embed=embed, view=nav_view)
+            
+            # Display the filtered results as individual embeds
+            await self.log_view.display_page(interaction)
+            
+            # Send confirmation message
+            await interaction.followup.send(
+                f"✅ Search complete! Showing {len(filtered)} results.", 
+                ephemeral=True
+            )
+        else:
+            await interaction.response.send_message(
+                f"❌ No results found for username '{username}'" + 
+                (f" in log type '{self.log_type}'" if self.log_type != "all" else ""), 
+                ephemeral=True
+            )
+            # Restore original messages
+            self.log_view.messages = self.original_messages
+
+class SearchResultsView(discord.ui.View):
+    def __init__(self, log_view: LogView, original_messages):
+        super().__init__(timeout=None)
+        self.log_view = log_view
+        self.original_messages = original_messages
+    
+    @discord.ui.button(label="◀️ Back to All Logs", style=discord.ButtonStyle.secondary)
+    async def back_to_all_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Restore original messages and display
+        self.log_view.messages = self.original_messages
+        self.log_view.current_page = 0
+        await self.log_view.display_page(interaction)
+    
+    @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.primary)
+    async def previous_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.log_view.current_page > 0:
+            self.log_view.current_page -= 1
+            await self.log_view.display_page(interaction)
+        else:
+            await interaction.response.send_message("You're already on the first page!", ephemeral=True)
+    
+    @discord.ui.button(label="Next ▶️", style=discord.ButtonStyle.primary)
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        max_pages = (len(self.log_view.messages) - 1) // 10
+        if self.log_view.current_page < max_pages:
+            self.log_view.current_page += 1
+            await self.log_view.display_page(interaction)
+        else:
+            await interaction.response.send_message("You're already on the last page!", ephemeral=True)
 
 class LogNavigationView(discord.ui.View):
     def __init__(self, log_view: LogView):
         super().__init__(timeout=None)
         self.log_view = log_view
+    
+    @discord.ui.button(label="🔍 Search", style=discord.ButtonStyle.primary)
+    async def search_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Show the search view with dropdown
+        search_view = SearchView(self.log_view)
+        embed = discord.Embed(
+            title="Search Logs",
+            description="1. Select a log type from the dropdown\n2. Click 'Search by Username' to enter the username",
+            color=discord.Color.blue()
+        )
+        await interaction.response.edit_message(embed=embed, view=search_view)
     
     @discord.ui.button(label="◀️ Back", style=discord.ButtonStyle.secondary)
     async def back_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -327,6 +536,46 @@ class LogNavigationView(discord.ui.View):
             await self.log_view.display_page(interaction)
         else:
             await interaction.response.send_message("You're already on the last page!", ephemeral=True)
+
+class CarlChannelView(discord.ui.View):
+    def __init__(self, log_view: LogView):
+        super().__init__(timeout=None)
+        self.log_view = log_view
+    
+    @discord.ui.button(label="Carl Log", style=discord.ButtonStyle.primary)
+    async def carl_log_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.log_view.show_logs(interaction, "Carl Log", CARL_LOG_CHANNEL)
+    
+    @discord.ui.button(label="Message Log", style=discord.ButtonStyle.primary)
+    async def carl_message_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.log_view.show_logs(interaction, "Carl Message", CARL_MESSAGE_CHANNEL)
+    
+    @discord.ui.button(label="Member Log", style=discord.ButtonStyle.primary)
+    async def carl_member_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.log_view.show_logs(interaction, "Carl Member", CARL_MEMBER_CHANNEL)
+    
+    @discord.ui.button(label="Server Log", style=discord.ButtonStyle.primary)
+    async def carl_server_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.log_view.show_logs(interaction, "Carl Server", CARL_SERVER_CHANNEL)
+    
+    @discord.ui.button(label="Voice Log", style=discord.ButtonStyle.primary)
+    async def carl_voice_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.log_view.show_logs(interaction, "Carl Voice", CARL_VOICE_CHANNEL)
+    
+    @discord.ui.button(label="Join/Leave Log", style=discord.ButtonStyle.primary)
+    async def carl_join_leave_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.log_view.show_logs(interaction, "Carl Join/Leave", CARL_JOIN_LEAVE_CHANNEL)
+    
+    @discord.ui.button(label="◀️ Back", style=discord.ButtonStyle.secondary)
+    async def back_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Return to main menu
+        main_embed = discord.Embed(
+            title="Cygex Log",
+            description="This log is specifically for the Nikoh server.\n\nAll important actions and updates will appear here.",
+            color=discord.Color.blue()
+        )
+        main_view = LogView()
+        await interaction.response.edit_message(embed=main_embed, view=main_view)
 
 @bot.event
 async def on_ready():
@@ -365,7 +614,78 @@ async def on_ready():
 
 @bot.event
 async def on_message(message):
-    if message.author == bot.user or not message.guild:
+    if message.author == bot.user:
+        return
+
+    # ====== RELAY BOT FUNCTIONALITY ======
+    # Check if this message is from a monitored channel and should be relayed
+    if message.guild and message.channel.id in channel_webhook_map:
+        webhook_url = channel_webhook_map[message.channel.id]
+        
+        # Get the username/nickname
+        display_name = message.author.nick if hasattr(message.author, 'nick') and message.author.nick else message.author.name
+        
+        # Combine text and embeds
+        content_parts = []
+        if message.content:
+            content_parts.append(message.content)
+        for embed in message.embeds:
+            if embed.title:
+                content_parts.append(f"**{embed.title}**")
+            if embed.description:
+                content_parts.append(embed.description)
+        
+        combined_content = "\n".join(content_parts).strip()
+        
+        # Create the main content
+        data = {
+            "content": f"📨 **Log from #{message.channel.name} by {display_name}:**\n{combined_content or '(No text)'}",
+            "embeds": []
+        }
+        
+        # Handle image attachments
+        for att in message.attachments:
+            if att.filename.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".webp")):
+                data["embeds"].append({
+                    "image": {"url": att.url},
+                    "description": f"🖼️ Attachment: {att.filename}"
+                })
+        
+        try:
+            response = requests.post(webhook_url, json=data)
+            if response.status_code not in [200, 204]:
+                print(f"❌ Webhook failed: {response.status_code}, {response.text}")
+        except Exception as e:
+            print(f"⚠️ Error sending relay message: {e}")
+
+    # ====== PROFANITY FILTER FUNCTIONALITY ======
+    if not message.guild:
+        # Handle DM messages (for search functionality)
+        user_id = message.author.id
+        if user_id in search_states and search_states[user_id]['searching']:
+            search_term = message.content.lower().strip()
+            log_view = search_states[user_id]['log_view']
+            # Filter messages
+            filtered = []
+            for msg in log_view.messages:
+                # Check text content
+                if search_term in (msg.content or '').lower():
+                    filtered.append(msg)
+                    continue
+                # Check embed fields
+                for emb in msg.embeds:
+                    if (emb.title and search_term in emb.title.lower()) or \
+                       (emb.description and search_term in emb.description.lower()):
+                        filtered.append(msg)
+                        break
+            # Update log_view to show only filtered messages
+            log_view.messages = filtered
+            log_view.current_page = 0
+            search_states[user_id]['searching'] = False
+            # Send results in DM
+            await log_view.display_page(await message.author.send("Search results:"))
+            await message.channel.send("Search complete. Use navigation to browse results or click 'Back to all logs' to exit search mode.")
+            return
         return
 
     # Debug: Print message info
