@@ -165,6 +165,109 @@ test_mode_active = False
 test_restricted_mode = True  # True = only specific channel, False = all channels
 test_channel_id = "1387308205905936394"
 
+# Channel IDs
+CARL_LOG_CHANNEL = 1147510748663250954
+RYNO_LOG_CHANNEL = 1388161864709701682  # Using server log as main
+CONFESSION_LOG_CHANNEL = 1400898728428175400
+
+class LogView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.current_page = 0
+        self.current_log_type = None
+        self.messages = []
+    
+    @discord.ui.button(label="Carl", style=discord.ButtonStyle.primary)
+    async def carl_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.show_logs(interaction, "Carl", CARL_LOG_CHANNEL)
+    
+    @discord.ui.button(label="Ryno", style=discord.ButtonStyle.primary)
+    async def ryno_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.show_logs(interaction, "Ryno", RYNO_LOG_CHANNEL)
+    
+    @discord.ui.button(label="Confession Logs", style=discord.ButtonStyle.primary)
+    async def confession_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.show_logs(interaction, "Confession", CONFESSION_LOG_CHANNEL)
+    
+    async def show_logs(self, interaction: discord.Interaction, log_type: str, channel_id: int):
+        channel = interaction.guild.get_channel(channel_id)
+        if not channel:
+            await interaction.response.send_message("Channel not found!", ephemeral=True)
+            return
+        
+        # Fetch last 50 messages (we'll paginate through them)
+        messages = []
+        async for message in channel.history(limit=50):
+            messages.append(message)
+        
+        self.messages = messages
+        self.current_page = 0
+        self.current_log_type = log_type
+        
+        await self.display_page(interaction)
+    
+    async def display_page(self, interaction: discord.Interaction):
+        if not self.messages:
+            await interaction.response.send_message("No messages found!", ephemeral=True)
+            return
+        
+        start_idx = self.current_page * 10
+        end_idx = min(start_idx + 10, len(self.messages))
+        page_messages = self.messages[start_idx:end_idx]
+        
+        embed = discord.Embed(
+            title=f"{self.current_log_type} Logs",
+            description="",
+            color=discord.Color.blue()
+        )
+        
+        for i, message in enumerate(page_messages, start=start_idx + 1):
+            embed.add_field(
+                name=f"Message {i}",
+                value=f"{message.content[:100]}{'...' if len(message.content) > 100 else ''}",
+                inline=False
+            )
+        
+        embed.set_footer(text=f"Page {self.current_page + 1} • Messages {start_idx + 1}-{end_idx} of {len(self.messages)}")
+        
+        # Create navigation view
+        nav_view = LogNavigationView(self)
+        
+        await interaction.response.edit_message(embed=embed, view=nav_view)
+
+class LogNavigationView(discord.ui.View):
+    def __init__(self, log_view: LogView):
+        super().__init__(timeout=None)
+        self.log_view = log_view
+    
+    @discord.ui.button(label="◀️ Back", style=discord.ButtonStyle.secondary)
+    async def back_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Return to main menu
+        main_embed = discord.Embed(
+            title="Cygex Log",
+            description="This log is specifically for the Nikoh server.\n\nAll important actions and updates will appear here.",
+            color=discord.Color.blue()
+        )
+        main_view = LogView()
+        await interaction.response.edit_message(embed=main_embed, view=main_view)
+    
+    @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.primary)
+    async def previous_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.log_view.current_page > 0:
+            self.log_view.current_page -= 1
+            await self.log_view.display_page(interaction)
+        else:
+            await interaction.response.send_message("You're already on the first page!", ephemeral=True)
+    
+    @discord.ui.button(label="Next ▶️", style=discord.ButtonStyle.primary)
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        max_pages = (len(self.log_view.messages) - 1) // 10
+        if self.log_view.current_page < max_pages:
+            self.log_view.current_page += 1
+            await self.log_view.display_page(interaction)
+        else:
+            await interaction.response.send_message("You're already on the last page!", ephemeral=True)
+
 @bot.event
 async def on_ready():
     print(f'Logged in as {bot.user}')
@@ -190,14 +293,7 @@ async def on_ready():
         file = discord.File("img/main.png", filename="main.png")
         embed.set_image(url="attachment://main.png")
 
-        view = discord.ui.View()
-        button = discord.ui.Button(label="Click Me!", style=discord.ButtonStyle.primary)
-
-        async def button_callback(interaction):
-            await interaction.response.send_message("Button clicked!", ephemeral=True)
-
-        button.callback = button_callback
-        view.add_item(button)
+        view = LogView()
 
         try:
             await user.send(embed=embed, view=view, file=file)
