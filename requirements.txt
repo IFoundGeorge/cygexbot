@@ -1,3 +1,3 @@
 discord.py
 better-profanity
-requests 
+requests
