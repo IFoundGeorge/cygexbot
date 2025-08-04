@@ -190,7 +190,18 @@ class LogView(discord.ui.View):
         await self.show_logs(interaction, "Confession", CONFESSION_LOG_CHANNEL)
     
     async def show_logs(self, interaction: discord.Interaction, log_type: str, channel_id: int):
-        channel = interaction.guild.get_channel(channel_id)
+        # Get the guild from the bot's guilds since interaction.guild is None in DMs
+        guild = None
+        for g in interaction.client.guilds:
+            if g.get_channel(channel_id):
+                guild = g
+                break
+        
+        if not guild:
+            await interaction.response.send_message("Guild not found!", ephemeral=True)
+            return
+            
+        channel = guild.get_channel(channel_id)
         if not channel:
             await interaction.response.send_message("Channel not found!", ephemeral=True)
             return
