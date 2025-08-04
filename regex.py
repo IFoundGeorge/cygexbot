@@ -206,9 +206,9 @@ class LogView(discord.ui.View):
             await interaction.response.send_message("Channel not found!", ephemeral=True)
             return
         
-        # Fetch last 50 messages (we'll paginate through them)
+        # Fetch last 50 messages (newest first)
         messages = []
-        async for message in channel.history(limit=50):
+        async for message in channel.history(limit=50, oldest_first=False):
             messages.append(message)
         
         self.messages = messages
