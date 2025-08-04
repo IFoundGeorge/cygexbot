@@ -183,8 +183,8 @@ async def on_ready():
 
         # Send the interactive embed with image
         embed = discord.Embed(
-            title="Test Interactive Embed",
-            description="This is a test embed with a button and an image.",
+            title="Cygex Log",
+            description="This log is specifically for the Nikoh server.\n\nAll important actions and updates will appear here.",
             color=discord.Color.blue()
         )
         file = discord.File("img/main.png", filename="main.png")
