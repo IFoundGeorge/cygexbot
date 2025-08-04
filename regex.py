@@ -226,6 +226,7 @@ class LogView(discord.ui.View):
         end_idx = min(start_idx + 10, len(self.messages))
         page_messages = self.messages[start_idx:end_idx]
         
+        # Create main embed
         embed = discord.Embed(
             title=f"{self.current_log_type} Logs",
             description="",
@@ -233,16 +234,38 @@ class LogView(discord.ui.View):
         )
         
         for i, message in enumerate(page_messages, start=start_idx + 1):
-            # Format the message content
-            content = message.content[:200] + "..." if len(message.content) > 200 else message.content
-            if not content.strip():
-                content = "[No text content]"
-            
-            # Add timestamp and author info
+            # Get message content and context
+            content = message.content.strip() if message.content else ""
             timestamp = message.created_at.strftime("%Y-%m-%d %H:%M:%S")
             author_name = message.author.display_name if hasattr(message.author, 'display_name') else message.author.name
             
-            field_value = f"**{author_name}** • {timestamp}\n{content}"
+            # Build the message description
+            message_parts = []
+            
+            # Add text content if available
+            if content:
+                message_parts.append(content[:150] + "..." if len(content) > 150 else content)
+            
+            # Add embed info if message has embeds
+            if message.embeds:
+                embed_count = len(message.embeds)
+                message_parts.append(f"📎 Contains {embed_count} embed{'s' if embed_count > 1 else ''}")
+            
+            # Add attachment info if message has attachments
+            if message.attachments:
+                attachment_count = len(message.attachments)
+                message_parts.append(f"📎 Contains {attachment_count} attachment{'s' if attachment_count > 1 else ''}")
+            
+            # Add system message info
+            if message.type != discord.MessageType.default:
+                message_parts.append(f"🔧 System message: {message.type.name}")
+            
+            # If no content and no special features, show context
+            if not message_parts:
+                message_parts.append("[Message with no visible content]")
+            
+            # Combine all parts
+            field_value = f"**{author_name}** • {timestamp}\n" + "\n".join(message_parts)
             
             embed.add_field(
                 name=f"Message {i}",
